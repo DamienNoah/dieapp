@@ -35,8 +35,8 @@ async function initializeApp() {
     console.log('Created data directory');
   }
 
-  // Initialize database
-  const db = Database.getInstance();
+  // Initialize database (async for sql.js)
+  const db = await Database.ensureInitialized();
   db.initializeSchema();
   console.log('Database schema initialized');
 

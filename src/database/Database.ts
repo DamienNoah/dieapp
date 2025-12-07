@@ -1,14 +1,38 @@
-import BetterSqlite3 from 'better-sqlite3';
+import initSqlJs, { Database as SqlJsDatabase } from 'sql.js';
+import fs from 'fs';
 import path from 'path';
+
+let SQL: any = null;
 
 export class Database {
   private static instance: Database;
-  private db: BetterSqlite3.Database;
+  private static initPromise: Promise<void> | null = null;
+  private db: SqlJsDatabase | null = null;
+  private dbPath: string;
 
   private constructor(dbPath?: string) {
     const defaultPath = path.join(process.cwd(), 'data', 'lifespan.db');
-    this.db = new BetterSqlite3(dbPath || defaultPath);
-    this.db.pragma('journal_mode = WAL');
+    this.dbPath = dbPath || defaultPath;
+  }
+
+  private async initialize(): Promise<void> {
+    if (!SQL) {
+      SQL = await initSqlJs();
+    }
+
+    // Ensure data directory exists
+    const dataDir = path.dirname(this.dbPath);
+    if (!fs.existsSync(dataDir)) {
+      fs.mkdirSync(dataDir, { recursive: true });
+    }
+
+    // Load existing database or create new one
+    if (fs.existsSync(this.dbPath)) {
+      const fileBuffer = fs.readFileSync(this.dbPath);
+      this.db = new SQL.Database(fileBuffer);
+    } else {
+      this.db = new SQL.Database();
+    }
   }
 
   static getInstance(dbPath?: string): Database {
@@ -18,31 +42,87 @@ export class Database {
     return Database.instance;
   }
 
-  static resetInstance(): void {
-    if (Database.instance) {
-      Database.instance.close();
-      Database.instance = undefined as any;
+  static async ensureInitialized(): Promise<Database> {
+    const instance = Database.getInstance();
+    if (!instance.db) {
+      if (!Database.initPromise) {
+        Database.initPromise = instance.initialize();
+      }
+      await Database.initPromise;
     }
+    return instance;
   }
 
-  run(sql: string, params: any[] = []): BetterSqlite3.RunResult {
-    return this.db.prepare(sql).run(...params);
+  static resetInstance(): void {
+    if (Database.instance && Database.instance.db) {
+      Database.instance.save();
+      Database.instance.db.close();
+      Database.instance.db = null;
+    }
+    Database.instance = undefined as any;
+    Database.initPromise = null;
+  }
+
+  private ensureDb(): SqlJsDatabase {
+    if (!this.db) {
+      throw new Error('Database not initialized. Call Database.ensureInitialized() first.');
+    }
+    return this.db;
+  }
+
+  run(sql: string, params: any[] = []): void {
+    const db = this.ensureDb();
+    db.run(sql, params);
+    this.save();
   }
 
   get<T>(sql: string, params: any[] = []): T | undefined {
-    return this.db.prepare(sql).get(...params) as T | undefined;
+    const db = this.ensureDb();
+    const stmt = db.prepare(sql);
+    stmt.bind(params);
+
+    if (stmt.step()) {
+      const row = stmt.getAsObject();
+      stmt.free();
+      return row as T;
+    }
+    stmt.free();
+    return undefined;
   }
 
   all<T>(sql: string, params: any[] = []): T[] {
-    return this.db.prepare(sql).all(...params) as T[];
+    const db = this.ensureDb();
+    const results: T[] = [];
+    const stmt = db.prepare(sql);
+    stmt.bind(params);
+
+    while (stmt.step()) {
+      results.push(stmt.getAsObject() as T);
+    }
+    stmt.free();
+    return results;
   }
 
   exec(sql: string): void {
-    this.db.exec(sql);
+    const db = this.ensureDb();
+    db.exec(sql);
+    this.save();
+  }
+
+  save(): void {
+    if (this.db) {
+      const data = this.db.export();
+      const buffer = Buffer.from(data);
+      fs.writeFileSync(this.dbPath, buffer);
+    }
   }
 
   close(): void {
-    this.db.close();
+    if (this.db) {
+      this.save();
+      this.db.close();
+      this.db = null;
+    }
   }
 
   // Initialize database schema
@@ -218,10 +298,5 @@ export class Database {
         FOREIGN KEY (achievement_id) REFERENCES achievements(achievement_id) ON DELETE CASCADE
       );
     `);
-  }
-
-  // Transaction helper
-  transaction<T>(fn: () => T): T {
-    return this.db.transaction(fn)();
   }
 }

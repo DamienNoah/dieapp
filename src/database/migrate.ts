@@ -13,7 +13,7 @@ async function migrate() {
   }
 
   // Initialize database and schema
-  const db = Database.getInstance();
+  const db = await Database.ensureInitialized();
   db.initializeSchema();
   console.log('Database schema initialized');
 

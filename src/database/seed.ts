@@ -17,7 +17,7 @@ async function seed() {
   }
 
   // Initialize database and schema
-  const db = Database.getInstance();
+  const db = await Database.ensureInitialized();
   db.initializeSchema();
 
   // Seed rewards
